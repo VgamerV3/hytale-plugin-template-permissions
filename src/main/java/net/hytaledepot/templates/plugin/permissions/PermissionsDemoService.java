@@ -2,30 +2,25 @@ package net.hytaledepot.templates.plugin.permissions;
 
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class PermissionsDemoService {
   private final Map<String, AtomicLong> actionCounters = new ConcurrentHashMap<>();
   private final Map<String, String> lastActionBySender = new ConcurrentHashMap<>();
-  private final Map<String, String> runtimeValues = new ConcurrentHashMap<>();
-  private final Map<String, String> domainState = new ConcurrentHashMap<>();
-  private final Map<String, AtomicLong> numericState = new ConcurrentHashMap<>();
-
+  private final Map<String, Set<String>> permissionsBySender = new ConcurrentHashMap<>();
   private volatile Path dataDirectory;
 
   public void initialize(Path dataDirectory) {
     this.dataDirectory = dataDirectory;
-    runtimeValues.put("category", "Permissions");
-    runtimeValues.put("defaultAction", "grant-demo");
-    runtimeValues.put("initialized", "true");
+    permissionsBySender.clear();
   }
 
   public void onHeartbeat(long tick) {
     actionCounters.computeIfAbsent("heartbeat", key -> new AtomicLong()).incrementAndGet();
-    if (tick % 120 == 0) {
-      runtimeValues.put("lastHeartbeat", String.valueOf(tick));
-    }
+
   }
 
   public void recordExternalEvent(String key) {
@@ -41,7 +36,6 @@ public final class PermissionsDemoService {
 
     if ("toggle".equals(normalizedAction)) {
       boolean enabled = state.toggleDemoFlag();
-      runtimeValues.put("demoFlag", String.valueOf(enabled));
       return "[Permissions] demoFlag=" + enabled + ", heartbeatTicks=" + heartbeatTicks;
     }
 
@@ -71,50 +65,36 @@ public final class PermissionsDemoService {
 
   public String diagnostics() {
     String directory = dataDirectory == null ? "unset" : dataDirectory.toString();
-    return "ops="
-        + operationCount()
-        + ", trackedActions="
-        + actionCounters.size()
-        + ", domainEntries="
-        + domainState.size()
-        + ", numericEntries="
-        + numericState.size()
-        + ", dataDirectory="
-        + directory;
+    int totalGrants = permissionsBySender.values().stream().mapToInt(Set::size).sum();
+    return "ops=" + operationCount()
+        + ", principals=" + permissionsBySender.size()
+        + ", grants=" + totalGrants
+        + ", dataDirectory=" + directory;
   }
 
   public void shutdown() {
-    runtimeValues.put("initialized", "false");
+    permissionsBySender.clear();
   }
 
   private String handleDomainAction(String sender, String action, long heartbeatTicks) {
+    Set<String> grants = grantsFor(sender);
     if ("sample".equals(action) || "grant-demo".equals(action)) {
-      String key = "permission:" + sender.toLowerCase() + ":demo.permission.temp";
-      domainState.put(key, "granted");
-      return "granted demo.permission.temp";
+      grants.add("hd.example.use");
+      grants.add("hd.example.manage");
+      return "granted " + new TreeSet<>(grants);
     }
     if ("revoke-demo".equals(action)) {
-      String key = "permission:" + sender.toLowerCase() + ":demo.permission.temp";
-      domainState.remove(key);
-      return "revoked demo.permission.temp";
+      grants.remove("hd.example.manage");
+      return "remaining grants=" + new TreeSet<>(grants);
     }
     if ("check-demo".equals(action)) {
-      String key = "permission:" + sender.toLowerCase() + ":demo.permission.temp";
-      return "demo.permission.temp=" + (domainState.containsKey(key) ? "granted" : "missing");
+      return "hd.example.use=" + grants.contains("hd.example.use") + ", hd.example.manage=" + grants.contains("hd.example.manage");
     }
     return null;
   }
 
-  private long incrementNumber(String key, long delta) {
-    return numericState.computeIfAbsent(key, item -> new AtomicLong()).addAndGet(delta);
-  }
-
-  private long number(String key) {
-    return numericState.computeIfAbsent(key, item -> new AtomicLong()).get();
-  }
-
-  private void setNumber(String key, long value) {
-    numericState.computeIfAbsent(key, item -> new AtomicLong()).set(value);
+  private Set<String> grantsFor(String sender) {
+    return permissionsBySender.computeIfAbsent(String.valueOf(sender).toLowerCase(), key -> ConcurrentHashMap.newKeySet());
   }
 
   private static String normalizeAction(String action) {
